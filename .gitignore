@@ -1,7 +1,7 @@
 local actor = getactors()[1]
 
 run_on_actor(actor, [=[
-    local FOV_RADIUS = 500
+    local FOV_RADIUS = 290
     local target = nil
     local bullets = {}
     local bulletId = 0
