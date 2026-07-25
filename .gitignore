@@ -14,10 +14,10 @@ run_on_actor(actor, [=[
         AccelerationEnabled = true,    
         AccelPower = 1.1,              
         GravityCompensation = true,    
-        DebugSnapline = true,          
+        DebugSnapline = true,
+        ArcHeight = 15,                -- высота подъёма над стеной
     }
 
-  
     local fovCircle = Drawing.new("Circle")
     fovCircle.Thickness = 1
     fovCircle.Color = Color3.fromRGB(255, 255, 255)
@@ -29,7 +29,6 @@ run_on_actor(actor, [=[
     snapline.Thickness = 1
     snapline.Color = Color3.fromRGB(255, 255, 255)
     snapline.Transparency = 0.7
-
 
     local manipLine = Drawing.new("Line")
     manipLine.Thickness = 2
@@ -108,6 +107,25 @@ run_on_actor(actor, [=[
         return closest
     end
 
+    -- Функция для вычисления точки прицеливания с учётом препятствий
+    local function GetArcTarget(bulletPos, targetPos)
+        local direction = (targetPos - bulletPos).Unit
+        local distance = (targetPos - bulletPos).Magnitude
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Blacklist
+        params.FilterDescendantsInstances = {game.Players.LocalPlayer.Character, workspace.CurrentCamera}
+        
+        local hit = workspace:Raycast(bulletPos, direction * distance, params)
+        if hit then
+            -- поднимаем точку над препятствием
+            local hitPos = hit.Position
+            local arcTarget = hitPos + Vector3.new(0, CONFIG.ArcHeight, 0)
+            return arcTarget
+        else
+            return targetPos
+        end
+    end
+
     local function IsBulletAdvanced(part)
         if not part:IsA("BasePart") then return false end
         if part:IsDescendantOf(game.Players.LocalPlayer.Character) then return false end
@@ -178,7 +196,9 @@ run_on_actor(actor, [=[
         end
         
         local bulletPos = bullet.Position
-        local dirToTarget = (targetPos - bulletPos)
+        -- Вычисляем точку прицеливания с учётом препятствий
+        local arcTarget = GetArcTarget(bulletPos, targetPos)
+        local dirToTarget = (arcTarget - bulletPos)
         local distance = dirToTarget.Magnitude
         if distance < 1 then return false end
         dirToTarget = dirToTarget.Unit
@@ -294,5 +314,4 @@ run_on_actor(actor, [=[
             end 
         end 
     end 
-
 ]=])
