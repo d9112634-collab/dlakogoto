@@ -1,7 +1,7 @@
 local actor = getactors()[1]
 
 run_on_actor(actor, [=[
-    local FOV_RADIUS = 150  -- Adjustable FOV size in pixels
+    local FOV_RADIUS = 500  -- Adjustable FOV size in pixels
     local target = nil
 
     -- Draw FOV circle (white)
