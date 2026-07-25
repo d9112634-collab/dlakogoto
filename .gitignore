@@ -1,10 +1,23 @@
 local actor = getactors()[1]
 
 run_on_actor(actor, [=[
-    local FOV_RADIUS = 500  -- Adjustable FOV size in pixels
+    local FOV_RADIUS = 500
     local target = nil
+    local bullets = {}
+    local bulletId = 0
 
-    -- Draw FOV circle (white)
+    local CONFIG = {
+        SteeringStrength = 0.25,      
+        PredictionTime = 0.15,         
+        MaxTurnAngle = math.rad(45),   
+        BulletMaxSpeed = 5000,         
+        AccelerationEnabled = true,    
+        AccelPower = 1.1,              
+        GravityCompensation = true,    
+        DebugSnapline = true,          
+    }
+
+  
     local fovCircle = Drawing.new("Circle")
     fovCircle.Thickness = 1
     fovCircle.Color = Color3.fromRGB(255, 255, 255)
@@ -12,11 +25,16 @@ run_on_actor(actor, [=[
     fovCircle.Transparency = 0.5
     fovCircle.Radius = FOV_RADIUS
 
-    -- Draw Snapline (white)
     local snapline = Drawing.new("Line")
     snapline.Thickness = 1
     snapline.Color = Color3.fromRGB(255, 255, 255)
     snapline.Transparency = 0.7
+
+
+    local manipLine = Drawing.new("Line")
+    manipLine.Thickness = 2
+    manipLine.Color = Color3.fromRGB(255, 100, 100)  
+    manipLine.Transparency = 0.5
 
     local function updateFOVCircle()
         local camera = workspace.CurrentCamera
@@ -24,7 +42,7 @@ run_on_actor(actor, [=[
         fovCircle.Position = camera.ViewportSize / 2
     end
 
-    local function updateSnapline()
+    local function updateSnapline(target)
         if target then
             local camera = workspace.CurrentCamera
             local screenPos, onScreen = camera:WorldToViewportPoint(target.Position)
@@ -40,31 +58,31 @@ run_on_actor(actor, [=[
         end
     end
 
-    local function isVisible(target)
-        local origin = game.workspace.CurrentCamera.CFrame
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances = {game.Players.LocalPlayer.Character}
-        params.IgnoreWater = true
-
-        local direction = (target.Position - origin.Position)
-        local result = workspace:Raycast(origin.Position, direction, params)
-
-        if result then
-            return game.Players:GetPlayerFromCharacter(result.Instance:FindFirstAncestorOfClass("Model")) ~= nil
-        else
-            return true
+    local function updateManipLine(bulletPos, targetPos)
+        if bulletPos and targetPos and CONFIG.DebugSnapline then
+            local camera = workspace.CurrentCamera
+            local bScreen, _ = camera:WorldToViewportPoint(bulletPos)
+            local tScreen, tOn = camera:WorldToViewportPoint(targetPos)
+            if tOn then
+                manipLine.From = Vector2.new(bScreen.X, bScreen.Y)
+                manipLine.To = Vector2.new(tScreen.X, tScreen.Y)
+                manipLine.Visible = true
+                return
+            end
         end
+        manipLine.Visible = false
     end
 
     local function GetClosestPlayer()
         local closestDistance = FOV_RADIUS
         local closest = nil
         local camera = workspace.CurrentCamera
+        local myChar = game.Players.LocalPlayer.Character
+        local myTeam = game.Players.LocalPlayer.Team and game.Players.LocalPlayer.Team.Name
 
         for _, v in pairs(game.Players:GetPlayers()) do
             if v == game.Players.LocalPlayer then continue end
-            
+
             local char = v.Character
             if not char then continue end
             local hrp = char:FindFirstChild("HumanoidRootPart")
@@ -72,31 +90,187 @@ run_on_actor(actor, [=[
             local hum = char:FindFirstChild("Humanoid")
             if not hum or hum.Health <= 0 then continue end
 
-            local myteam = game.Players.LocalPlayer.Team and game.Players.LocalPlayer.Team.Name
             local theirTeam = v.Team and v.Team.Name
-
-            if myteam == theirTeam then continue end
+            if myTeam and myTeam == theirTeam then continue end
 
             local head = char:FindFirstChild("Head")
             if not head then continue end
+
             local screenPos, onScreen = camera:WorldToViewportPoint(hrp.Position)
             if onScreen then
                 local distance = (Vector2.new(screenPos.X, screenPos.Y) - camera.ViewportSize / 2).Magnitude
                 if distance < closestDistance then
-                    if not isVisible(head) then continue end
                     closestDistance = distance
                     closest = head
                 end
             end
         end
-
         return closest
     end
+
+    local function IsBulletAdvanced(part)
+        if not part:IsA("BasePart") then return false end
+        if part:IsDescendantOf(game.Players.LocalPlayer.Character) then return false end
+        if part:GetAttribute("IsBullet") then return false end  
+        
+        if part.Size.Magnitude < 5 and part.AssemblyLinearVelocity.Magnitude > 50 then
+            return true
+        end
+        
+        if (part.Shape == Enum.PartType.Ball or part.Shape == Enum.PartType.Cylinder) and part.Size.Magnitude < 10 then
+            if part.AssemblyLinearVelocity.Magnitude > 30 then
+                return true
+            end
+        end
+        
+        local name = part.Name:lower()
+        local bulletKeywords = {"bullet", "projectile", "pellet", "shot", "ammo", "round", "shell", "missile", "rocket", "arrow", "dart", "beam"}
+        for _, keyword in ipairs(bulletKeywords) do
+            if name:find(keyword) then
+                local vel = part.AssemblyLinearVelocity
+                if vel and vel.Magnitude > 20 then
+                    return true
+                end
+            end
+        end
+        
+        if part:FindFirstChildWhichIsA("BodyVelocity") or part:FindFirstChildWhichIsA("BodyPosition") then
+            if part.Size.Magnitude < 10 then
+                return true
+            end
+        end
+        
+        return false
+    end
+
+    workspace.DescendantAdded:Connect(function(desc)
+        task.wait(0.03)
+        if IsBulletAdvanced(desc) then
+            bulletId = bulletId + 1
+            desc:SetAttribute("IsBullet", true)
+            desc:SetAttribute("BulletID", bulletId)
+            table.insert(bullets, {
+                Part = desc,
+                ID = bulletId,
+                SpawnTime = tick(),
+                StartPos = desc.Position
+            })
+        end
+    end)
+
+    local function ManipulateBullet(bulletData, dt)
+        local bullet = bulletData.Part
+        if not bullet or not bullet.Parent then return false end
+        
+        local vel = bullet.AssemblyLinearVelocity
+        if vel.Magnitude < 5 then return false end  
+        
+        local targetPart = target
+        local targetPos = targetPart.Position
+        
+        local targetChar = targetPart.Parent
+        if targetChar then
+            local targetHrp = targetChar:FindFirstChild("HumanoidRootPart")
+            if targetHrp then
+                local targetVel = targetHrp.AssemblyLinearVelocity
+                targetPos = targetPos + targetVel * CONFIG.PredictionTime
+            end
+        end
+        
+        local bulletPos = bullet.Position
+        local dirToTarget = (targetPos - bulletPos)
+        local distance = dirToTarget.Magnitude
+        if distance < 1 then return false end
+        dirToTarget = dirToTarget.Unit
+        
+        local distanceFactor = math.clamp(1 - (distance / 500), 0.1, 1.0)
+        local steeringForce = CONFIG.SteeringStrength * distanceFactor * 3
+        
+        local currentDir = vel.Unit
+        local dot = currentDir:Dot(dirToTarget)
+        local angle = math.acos(math.clamp(dot, -1, 1))
+        
+        local newDir
+        if angle > CONFIG.MaxTurnAngle then
+            local rotAxis = currentDir:Cross(dirToTarget).Unit
+            local rotation = CFrame.fromAxisAngle(rotAxis, CONFIG.MaxTurnAngle)
+            newDir = rotation * currentDir
+        else
+            newDir = currentDir:Lerp(dirToTarget, steeringForce * dt * 30).Unit
+        end
+        
+        local speed = vel.Magnitude
+        
+        if speed > CONFIG.BulletMaxSpeed then
+            speed = CONFIG.BulletMaxSpeed
+        end
+        
+        if CONFIG.AccelerationEnabled then
+            speed = speed * (1 + (CONFIG.AccelPower - 1) * distanceFactor * dt * 10)
+        end
+        
+        local gravityComp = Vector3.new(0, 0, 0)
+        if CONFIG.GravityCompensation then
+            local gravity = workspace.Gravity
+            gravityComp = Vector3.new(0, gravity * dt, 0)
+        end
+        
+        local newVel = newDir * speed + gravityComp
+        bullet.AssemblyLinearVelocity = newVel
+        
+        if CONFIG.DebugSnapline then
+            updateManipLine(bulletPos, targetPos)
+        end
+        
+        return true
+    end
+
+    game:GetService("RunService").Heartbeat:Connect(function(dt)
+        if not target then
+            manipLine.Visible = false
+            return
+        end
+        
+        local targetPos = target.Position
+        
+        for i = #bullets, 1, -1 do
+            local bData = bullets[i]
+            if not bData or not bData.Part or not bData.Part.Parent then
+                table.remove(bullets, i)
+                continue
+            end
+            
+            if tick() - bData.SpawnTime > 5 then
+                pcall(function() bData.Part:Destroy() end)
+                table.remove(bullets, i)
+                continue
+            end
+            
+            local alive = ManipulateBullet(bData, dt)
+            if not alive then
+                table.remove(bullets, i)
+            end
+        end
+        
+        if #bullets > 50 then
+            for i = 1, #bullets - 50 do
+                local old = bullets[i]
+                if old and old.Part then
+                    pcall(function() old.Part:Destroy() end)
+                end
+            end
+            table.remove(bullets, 1, #bullets - 50)
+        end
+    end)
 
     game:GetService("RunService").RenderStepped:Connect(function()
         target = GetClosestPlayer()
         updateFOVCircle()
-        updateSnapline()
+        updateSnapline(target)
+        
+        if not target then
+            manipLine.Visible = false
+        end
     end)
 
     for i, v in pairs(getgc()) do   
@@ -116,7 +290,9 @@ run_on_actor(actor, [=[
                     end 
                     return old(p1,p2)
                 end)
+                break
             end 
         end 
     end 
+
 ]=])
