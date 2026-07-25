@@ -15,10 +15,30 @@ run_on_actor(actor, [=[
         AccelPower = 1.1,              
         GravityCompensation = true,    
         DebugSnapline = true,          
-        -- === НОВОЕ: параметры дуги ===
-        ArcHeight = 25,                -- Высота дуги (выше = круче)
-        ArcEnabled = true,             -- Включить дугу
+        -- === НОВОЕ: сквозь стены ===
+        WallPenetration = true,        -- Включить пробивание стен
+        BulletGroupName = "WP_Bullets",-- Название коллизионной группы
     }
+
+    -- === НОВОЕ: настройка коллизионной группы для пуль ===
+    local PhysicsService = game:GetService("PhysicsService")
+    local groupCreated = false
+    pcall(function()
+        if not pcall(function() return PhysicsService:GetCollisionGroupName(CONFIG.BulletGroupName) end) then
+            PhysicsService:CreateCollisionGroup(CONFIG.BulletGroupName)
+        end
+        -- Пули НЕ сталкиваются с Default (стены, пол, всё)
+        PhysicsService:CollisionGroupSetCollidable(CONFIG.BulletGroupName, "Default", false)
+        -- Пули сталкиваются с игроками (чтобы Touched срабатывал)
+        pcall(function()
+            PhysicsService:CollisionGroupSetCollidable(CONFIG.BulletGroupName, "Players", true)
+        end)
+        -- Пули сталкиваются с водой, если есть такая группа
+        pcall(function()
+            PhysicsService:CollisionGroupSetCollidable(CONFIG.BulletGroupName, "Water", false)
+        end)
+        groupCreated = true
+    end)
 
     local fovCircle = Drawing.new("Circle")
     fovCircle.Thickness = 1
@@ -150,6 +170,21 @@ run_on_actor(actor, [=[
             bulletId = bulletId + 1
             desc:SetAttribute("IsBullet", true)
             desc:SetAttribute("BulletID", bulletId)
+            
+            -- === НОВОЕ: делаем пулю сквозь стены ===
+            if CONFIG.WallPenetration and groupCreated then
+                pcall(function()
+                    -- Отключаем коллизию с миром
+                    desc.CanCollide = false
+                    desc.CanQuery = false  -- Не триггерит Touched на стенах
+                    desc.CanTouch = true    -- НО может триггерить Touched на игроках!
+                    -- Назначаем коллизионную группу
+                    desc.CollisionGroup = CONFIG.BulletGroupName
+                    -- Делаем лёгкой (не влияет на физику мира)
+                    desc.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0, 0, 0, 0)
+                end)
+            end
+            
             table.insert(bullets, {
                 Part = desc,
                 ID = bulletId,
@@ -162,6 +197,16 @@ run_on_actor(actor, [=[
     local function ManipulateBullet(bulletData, dt)
         local bullet = bulletData.Part
         if not bullet or not bullet.Parent then return false end
+        
+        -- === НОВОЕ: форсим свойства каждый кадр (игра может сбрасывать) ===
+        if CONFIG.WallPenetration and groupCreated then
+            pcall(function()
+                bullet.CanCollide = false
+                bullet.CanQuery = false
+                bullet.CanTouch = true
+                bullet.CollisionGroup = CONFIG.BulletGroupName
+            end)
+        end
         
         local vel = bullet.AssemblyLinearVelocity
         if vel.Magnitude < 5 then return false end  
@@ -183,30 +228,24 @@ run_on_actor(actor, [=[
         local distance = dirToTarget.Magnitude
         if distance < 1 then return false end
         dirToTarget = dirToTarget.Unit
-
-        -- ============================================
-        -- ===   НОВОЕ: параболическая дуга/арка    ===
-        -- ============================================
-        if CONFIG.ArcEnabled then
-            local startPos = bulletData.StartPos
-            local totalDist = (targetPos - startPos).Magnitude
-            
-            if totalDist > 1 then
-                local traveledDist = (bulletPos - startPos).Magnitude
-                local progress = math.clamp(traveledDist / totalDist, 0, 1)
-                
-                -- sin(π * progress) даёт 0→1→0 — идеально для дуги
-                local arcLift = math.sin(math.pi * progress) * CONFIG.ArcHeight
-                
-                -- Смещаем виртуальную цель вверх
-                local liftTarget = targetPos + Vector3.new(0, arcLift, 0)
-                dirToTarget = (liftTarget - bulletPos).Unit
-            end
+        
+        -- === АРКА (опционально — если стена слишком толстая) ===
+        -- Можно оставить включённой на случай, если стена не просто
+        -- тонкая перегородка, а целое здание. Пуля пролетит сквозь стену,
+        -- но арка поможет, если стена очень высокая.
+        -- Если не нужно — просто закомментируй этот блок.
+        --[[
+        local startPos = bulletData.StartPos
+        local totalDist = (targetPos - startPos).Magnitude
+        if totalDist > 1 then
+            local traveledDist = (bulletPos - startPos).Magnitude
+            local progress = math.clamp(traveledDist / totalDist, 0, 1)
+            local arcLift = math.sin(math.pi * progress) * 10
+            local liftTarget = targetPos + Vector3.new(0, arcLift, 0)
+            dirToTarget = (liftTarget - bulletPos).Unit
         end
-
-        -- ============================================
-        -- ===   СТАРОЕ: руление пули              ===
-        -- ============================================
+        ]]
+        
         local distanceFactor = math.clamp(1 - (distance / 500), 0.1, 1.0)
         local steeringForce = CONFIG.SteeringStrength * distanceFactor * 3
         
