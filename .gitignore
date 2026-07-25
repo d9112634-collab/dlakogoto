@@ -14,8 +14,10 @@ run_on_actor(actor, [=[
         AccelerationEnabled = true,    
         AccelPower = 1.1,              
         GravityCompensation = true,    
-        DebugSnapline = true,
-        ArcHeight = 15,                -- высота подъёма над стеной
+        DebugSnapline = true,          
+        -- === НОВОЕ: параметры дуги ===
+        ArcHeight = 25,                -- Высота дуги (выше = круче)
+        ArcEnabled = true,             -- Включить дугу
     }
 
     local fovCircle = Drawing.new("Circle")
@@ -107,25 +109,6 @@ run_on_actor(actor, [=[
         return closest
     end
 
-    -- Функция для вычисления точки прицеливания с учётом препятствий
-    local function GetArcTarget(bulletPos, targetPos)
-        local direction = (targetPos - bulletPos).Unit
-        local distance = (targetPos - bulletPos).Magnitude
-        local params = RaycastParams.new()
-        params.FilterType = Enum.RaycastFilterType.Blacklist
-        params.FilterDescendantsInstances = {game.Players.LocalPlayer.Character, workspace.CurrentCamera}
-        
-        local hit = workspace:Raycast(bulletPos, direction * distance, params)
-        if hit then
-            -- поднимаем точку над препятствием
-            local hitPos = hit.Position
-            local arcTarget = hitPos + Vector3.new(0, CONFIG.ArcHeight, 0)
-            return arcTarget
-        else
-            return targetPos
-        end
-    end
-
     local function IsBulletAdvanced(part)
         if not part:IsA("BasePart") then return false end
         if part:IsDescendantOf(game.Players.LocalPlayer.Character) then return false end
@@ -196,13 +179,34 @@ run_on_actor(actor, [=[
         end
         
         local bulletPos = bullet.Position
-        -- Вычисляем точку прицеливания с учётом препятствий
-        local arcTarget = GetArcTarget(bulletPos, targetPos)
-        local dirToTarget = (arcTarget - bulletPos)
+        local dirToTarget = (targetPos - bulletPos)
         local distance = dirToTarget.Magnitude
         if distance < 1 then return false end
         dirToTarget = dirToTarget.Unit
-        
+
+        -- ============================================
+        -- ===   НОВОЕ: параболическая дуга/арка    ===
+        -- ============================================
+        if CONFIG.ArcEnabled then
+            local startPos = bulletData.StartPos
+            local totalDist = (targetPos - startPos).Magnitude
+            
+            if totalDist > 1 then
+                local traveledDist = (bulletPos - startPos).Magnitude
+                local progress = math.clamp(traveledDist / totalDist, 0, 1)
+                
+                -- sin(π * progress) даёт 0→1→0 — идеально для дуги
+                local arcLift = math.sin(math.pi * progress) * CONFIG.ArcHeight
+                
+                -- Смещаем виртуальную цель вверх
+                local liftTarget = targetPos + Vector3.new(0, arcLift, 0)
+                dirToTarget = (liftTarget - bulletPos).Unit
+            end
+        end
+
+        -- ============================================
+        -- ===   СТАРОЕ: руление пули              ===
+        -- ============================================
         local distanceFactor = math.clamp(1 - (distance / 500), 0.1, 1.0)
         local steeringForce = CONFIG.SteeringStrength * distanceFactor * 3
         
